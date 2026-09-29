@@ -16,24 +16,16 @@ import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
+
+try:  # deprecated in Streamlit 1.56+, still used as a fallback on older versions
+    import streamlit.components.v1 as components
+except Exception:  # pragma: no cover
+    components = None
 
 BASE_DIR = Path(__file__).resolve().parent
-SEARCH_DIRS = [BASE_DIR, BASE_DIR / "movie-dataset"]
-
-
-def _resolve_file(*candidates):
-    for folder in SEARCH_DIRS:
-        for candidate in candidates:
-            path = folder / candidate
-            if path.exists():
-                return path
-    return BASE_DIR / candidates[0]
-
-
-MOVIES_CSV = _resolve_file("tmdb_5000_movies.csv", "movies.csv")
-CREDITS_CSV = _resolve_file("tmdb_5000_credits.csv", "credits.csv")
-MODEL_PKL = _resolve_file("movie_recommendation_models.pkl", "model.pkl")
+MOVIES_CSV = BASE_DIR / "tmdb_5000_movies.csv"
+CREDITS_CSV = BASE_DIR / "tmdb_5000_credits.csv"
+MODEL_PKL = BASE_DIR / "movie_recommendation_models.pkl"
 POOL = 300  # neighbours fetched before filters are applied
 
 st.set_page_config(
@@ -161,7 +153,7 @@ def _esc(x):
     return html.escape(str(x), quote=True)
 
 
-def _shorten(text, limit=230):
+def _shorten(text, limit=220):
     if len(text) <= limit:
         return text
     return text[:limit].rsplit(" ", 1)[0].rstrip(",;:. ") + "..."
@@ -210,15 +202,19 @@ def card_html(item, n):
     )
 
 
-CARDS_TEMPLATE = """<!doctype html><html><head><meta charset="utf-8">
+CARD_HEIGHT = 330                  # px, height of the card itself
+FRAME_HEIGHT = CARD_HEIGHT + 48    # px, iframe height (room for tilt + shadow)
+
+CARD_TEMPLATE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700&family=Unbounded:wght@600;700;800&display=swap');
 :root{--ink:#F4F1FF;--muted:#A79FCB;--amber:#FBBF24;--display:'Unbounded','Trebuchet MS',system-ui,sans-serif;--body:'Manrope',system-ui,-apple-system,'Segoe UI',sans-serif}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:var(--body);color:var(--ink);background:transparent;padding:14px 6px 30px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,230px));gap:38px 30px;justify-content:center;perspective:1400px}
-.card{position:relative;aspect-ratio:2/3;cursor:pointer;outline:none;opacity:0;animation:rise .7s cubic-bezier(.2,.8,.2,1) forwards;animation-delay:calc(var(--n)*70ms)}
+html,body{background:transparent;overflow:hidden}
+body{font-family:var(--body);color:var(--ink);padding:14px 8px 34px;display:flex;justify-content:center}
+.stage{width:100%;display:flex;justify-content:center;perspective:1400px}
+.card{position:relative;width:min(100%,230px);height:__CARD_H__px;cursor:pointer;outline:none;opacity:0;animation:rise .7s cubic-bezier(.2,.8,.2,1) forwards;animation-delay:calc(var(--n)*70ms)}
 @keyframes rise{from{opacity:0;transform:translateY(34px) rotateX(20deg)}to{opacity:1;transform:none}}
 .card::after{content:'';position:absolute;left:10%;right:10%;bottom:-20px;height:26px;background:radial-gradient(ellipse at center,rgba(0,0,0,.6),transparent 70%);filter:blur(7px);z-index:-1;transition:opacity .3s,transform .3s}
 .card.hover::after{transform:translateY(8px) scale(.9);opacity:.7}
@@ -236,65 +232,55 @@ body{font-family:var(--body);color:var(--ink);background:transparent;padding:14p
 .top{display:flex;justify-content:space-between;align-items:center}
 .pill{font:700 12px var(--body);padding:5px 11px;border-radius:999px;background:rgba(13,10,31,.5);border:1px solid rgba(255,255,255,.26);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
 .rate b{color:var(--amber)}
-h3{font-family:var(--display);font-weight:700;line-height:1.18;color:#fff;text-shadow:0 2px 14px rgba(0,0,0,.55);display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
-.facts{display:flex;gap:12px;margin-top:9px;font-size:12px;font-weight:600;color:rgba(255,255,255,.88)}
+h3{font-family:var(--display);font-weight:700;line-height:1.18;color:#fff;text-shadow:0 2px 14px rgba(0,0,0,.55);display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.facts{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:9px;font-size:12px;font-weight:600;color:rgba(255,255,255,.88)}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .chip{font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.24)}
-.back{transform:rotateY(180deg);padding:18px;display:flex;flex-direction:column;gap:12px;background:linear-gradient(165deg,#2A1F63,#130F2E 72%);box-shadow:0 26px 44px -22px rgba(0,0,0,.85),inset 0 0 0 1px rgba(167,139,250,.4)}
-h4{font:700 13.5px/1.25 var(--display);color:#fff}
-.plot{font-size:12.5px;line-height:1.55;color:#DDD7F7}
+.back{transform:rotateY(180deg);padding:16px;display:flex;flex-direction:column;gap:10px;background:linear-gradient(165deg,#2A1F63,#130F2E 72%);box-shadow:0 26px 44px -22px rgba(0,0,0,.85),inset 0 0 0 1px rgba(167,139,250,.4)}
+h4{font:700 13px/1.25 var(--display);color:#fff;overflow-wrap:anywhere}
+.plot{font-size:12px;line-height:1.5;color:#DDD7F7;display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden}
 dl{margin-top:auto}
 dt{font-size:11px;font-weight:600;color:var(--muted)}
-dd{font-size:12.5px;font-weight:600;margin:1px 0 9px;line-height:1.35}
+dd{font-size:12px;font-weight:600;margin:1px 0 8px;line-height:1.3}
 .sim{font-size:11.5px;font-weight:600;color:var(--muted)}
 .meter{height:6px;border-radius:99px;background:rgba(255,255,255,.12);margin-top:6px;overflow:hidden}
 .meter i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#8B5CF6,#F43F8E)}
 @media (prefers-reduced-motion:reduce){.card{animation:none;opacity:1}.tilt,.flip{transition:none}}
 </style></head><body>
-<div id="wrap"><div class="grid">__CARDS__</div></div>
+<div class="stage">__CARD__</div>
 <script>
 (function(){
-  var cards=document.querySelectorAll('.card');
-  cards.forEach(function(card){
-    var tilt=card.querySelector('.tilt');
-    card.addEventListener('mousemove',function(e){
-      var r=card.getBoundingClientRect();
-      var px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
-      tilt.style.setProperty('--ry',((px-.5)*24)+'deg');
-      tilt.style.setProperty('--rx',((.5-py)*24)+'deg');
-      tilt.style.setProperty('--mx',(px*100)+'%');
-      tilt.style.setProperty('--my',(py*100)+'%');
-      tilt.style.setProperty('--s','1.05');
-      card.classList.add('hover');
-    });
-    card.addEventListener('mouseleave',function(){
-      tilt.style.setProperty('--rx','0deg');tilt.style.setProperty('--ry','0deg');tilt.style.setProperty('--s','1');
-      card.classList.remove('hover');
-    });
-    function toggle(){
-      var on=card.classList.toggle('flipped');
-      card.setAttribute('aria-pressed',on?'true':'false');
-    }
-    card.addEventListener('click',toggle);
-    card.addEventListener('keydown',function(e){
-      if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();}
-    });
+  var card=document.querySelector('.card'); if(!card) return;
+  var tilt=card.querySelector('.tilt');
+  card.addEventListener('mousemove',function(e){
+    var r=card.getBoundingClientRect();
+    var px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
+    tilt.style.setProperty('--ry',((px-.5)*24)+'deg');
+    tilt.style.setProperty('--rx',((.5-py)*24)+'deg');
+    tilt.style.setProperty('--mx',(px*100)+'%');
+    tilt.style.setProperty('--my',(py*100)+'%');
+    tilt.style.setProperty('--s','1.05');
+    card.classList.add('hover');
   });
-  function fit(){
-    var h=document.getElementById('wrap').getBoundingClientRect().height+44;
-    try{ if(window.frameElement){ window.frameElement.style.height=h+'px'; } }catch(err){}
+  card.addEventListener('mouseleave',function(){
+    tilt.style.setProperty('--rx','0deg');tilt.style.setProperty('--ry','0deg');tilt.style.setProperty('--s','1');
+    card.classList.remove('hover');
+  });
+  function toggle(){
+    var on=card.classList.toggle('flipped');
+    card.setAttribute('aria-pressed',on?'true':'false');
   }
-  window.addEventListener('load',fit);
-  window.addEventListener('resize',fit);
-  if(window.ResizeObserver){ new ResizeObserver(fit).observe(document.getElementById('wrap')); }
-  fit();
+  card.addEventListener('click',toggle);
+  card.addEventListener('keydown',function(e){
+    if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();}
+  });
 })();
 </script></body></html>"""
 
 
-def build_cards_document(items):
-    body = "".join(card_html(it, i) for i, it in enumerate(items))
-    return CARDS_TEMPLATE.replace("__CARDS__", body)
+def build_card_document(item, n=0):
+    doc = CARD_TEMPLATE.replace("__CARD_H__", str(CARD_HEIGHT))
+    return doc.replace("__CARD__", card_html(item, n))
 
 
 def hero_ring_html(featured):
@@ -319,7 +305,12 @@ PAGE_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@600;700;800&display=swap');
 :root{--rm-display:'Unbounded','Trebuchet MS',system-ui,sans-serif;--rm-body:'Manrope',system-ui,-apple-system,'Segoe UI',sans-serif}
-html,body,[class*="st-"],.stApp{font-family:var(--rm-body)}
+.stApp{font-family:var(--rm-body);color:#F4F1FF}
+.stApp :is(p,label,li,input,textarea,button,h1,h2,h3,h4,h5,h6){font-family:var(--rm-body)}
+/* keep Streamlit's icon glyphs on their own icon font (otherwise they print as raw text) */
+[data-testid="stIconMaterial"],[data-testid="stExpanderIcon"],[data-testid="stSidebarCollapseButton"] span,span[class*="material"],span[translate="no"]{font-family:"Material Symbols Rounded","Material Symbols Outlined","Material Icons"!important}
+[data-testid="stWidgetLabel"],[data-testid="stWidgetLabel"] p,[data-testid="stMarkdownContainer"]{color:#F4F1FF}
+[data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] p{color:#A79FCB}
 .stApp{background:
   radial-gradient(900px 520px at 88% -8%,rgba(139,92,246,.38),transparent 62%),
   radial-gradient(760px 480px at -8% 12%,rgba(244,63,142,.22),transparent 58%),
@@ -354,10 +345,35 @@ header[data-testid="stHeader"]{background:transparent}
 @media (max-width:640px){.rm-stage{transform:scale(.62);height:300px;margin:-20px 0}}
 @media (prefers-reduced-motion:reduce){.rm-ring{animation:none;transform:rotateX(-9deg) rotateY(-20deg)}}
 
-/* widgets */
+/* custom "how it works" section (no icon font) */
+.rm-how{margin-top:1.6rem;border:1px solid rgba(167,139,250,.25);border-radius:14px;background:rgba(255,255,255,.03);overflow:hidden}
+.rm-how summary{cursor:pointer;list-style:none;padding:1rem 1.25rem;font-weight:700;display:flex;align-items:center;gap:.75rem;color:#F4F1FF}
+.rm-how summary::-webkit-details-marker{display:none}
+.rm-how summary::before{content:'';width:8px;height:8px;border-right:2px solid #C4B5FD;border-bottom:2px solid #C4B5FD;transform:rotate(-45deg);transition:transform .2s}
+.rm-how[open] summary::before{transform:rotate(45deg)}
+.rm-how summary:focus-visible{outline:2px solid #C4B5FD;outline-offset:-2px;border-radius:14px}
+.rm-how-body{padding:0 1.25rem 1.25rem}
+.rm-how-body p{color:#CFC8EE;line-height:1.65;max-width:52rem;margin:0 0 .5rem}
+.rm-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:1rem 0}
+.rm-stat{display:flex;flex-direction:column;gap:2px;background:rgba(255,255,255,.04);border:1px solid rgba(167,139,250,.2);border-radius:16px;padding:1rem 1.2rem}
+.rm-stat span{font-size:.85rem;color:#A79FCB}
+.rm-stat b{font:700 1.8rem/1.3 var(--rm-display);color:#fff}
+.rm-stat em{font-style:normal;font-size:.85rem;color:#4ADE80}
+.rm-how-body .rm-note{font-size:.85rem;color:#A79FCB;margin-top:.4rem}
+
+/* widgets (colours are set here too, so the look holds even without .streamlit/config.toml) */
+[data-baseweb="select"]>div,[data-baseweb="input"],[data-baseweb="base-input"],[data-baseweb="textarea"]{background-color:#171232!important;border-color:rgba(167,139,250,.25)!important}
+[data-baseweb="select"] *,input,textarea{color:#F4F1FF}
+[data-baseweb="popover"] [data-baseweb="menu"],[data-baseweb="popover"] ul{background:#1B1540!important}
+[data-baseweb="tag"]{background-color:#6D4AE0!important;color:#fff!important}
+[data-baseweb="tab-highlight"]{background-color:#8B5CF6!important}
+.stTabs [data-baseweb="tab"][aria-selected="true"] p{color:#E4DCFF}
+[data-testid="stExpander"] details{background:rgba(255,255,255,.03);border:1px solid rgba(167,139,250,.25);border-radius:14px}
+[data-testid="stSlider"] [role="slider"]{background-color:#8B5CF6!important}
+[class*="st-key-q_"] button{width:100%}
 .stButton>button{border-radius:99px;font-weight:700;padding:.55rem 1.4rem;border:1px solid rgba(167,139,250,.4);background:rgba(139,92,246,.12);color:#EDE9FF;transition:transform .15s,box-shadow .15s,background .15s}
 .stButton>button:hover{transform:translateY(-2px);border-color:#C4B5FD;background:rgba(139,92,246,.28);color:#fff}
-[data-testid="stFormSubmitButton"]>button,.stButton>button[kind="primary"]{background:linear-gradient(135deg,#8B5CF6,#F43F8E);border:0;color:#fff;box-shadow:0 12px 30px -12px rgba(244,63,142,.75)}
+[data-testid="stFormSubmitButton"]>button,button[data-testid="stBaseButton-secondaryFormSubmit"],.stButton>button[kind="primary"]{background:linear-gradient(135deg,#8B5CF6,#F43F8E);border:0;color:#fff;box-shadow:0 12px 30px -12px rgba(244,63,142,.75)}
 [data-testid="stFormSubmitButton"]>button:hover{background:linear-gradient(135deg,#9C74FF,#FF5C9F);color:#fff}
 .stTabs [data-baseweb="tab-list"]{gap:.4rem}
 .stTabs [data-baseweb="tab"]{font-weight:700;padding:.6rem 1.1rem}
@@ -366,28 +382,33 @@ header[data-testid="stHeader"]{background:transparent}
 """
 
 
+def _theme_applied():
+    """True when .streamlit/config.toml with the ReelMatch theme is being used."""
+    try:
+        return str(st.get_option("theme.primaryColor")).lower() == "#8b5cf6"
+    except Exception:
+        return False
+
+
 def inject_css():
     st.markdown(PAGE_CSS, unsafe_allow_html=True)
+    if not _theme_applied():
+        # Streamlit's default primary colour is red; shift the slider to violet.
+        st.markdown(
+            '<style>[data-testid="stSlider"] [data-baseweb="slider"]{filter:hue-rotate(255deg)}</style>',
+            unsafe_allow_html=True,
+        )
 
 
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
-missing = [
-    label
-    for label, path in (
-        ("tmdb_5000_movies.csv / movies.csv", MOVIES_CSV),
-        ("tmdb_5000_credits.csv / credits.csv", CREDITS_CSV),
-        ("movie_recommendation_models.pkl", MODEL_PKL),
-    )
-    if not path.exists()
-]
+missing = [p.name for p in (MOVIES_CSV, CREDITS_CSV, MODEL_PKL) if not p.exists()]
 inject_css()
 if missing:
     st.error(
-        "Missing required files. The app looks for them in the project root or the movie-dataset folder: "
-        + ", ".join(missing)
+        "These files must sit in the same folder as app.py: " + ", ".join(missing)
     )
     st.stop()
 
@@ -438,13 +459,31 @@ def rank(query_vec, exclude=None):
     return out
 
 
+CARD_COLUMNS = 4
+
+
+def render_html(doc, height):
+    """Embed an HTML string. st.iframe replaces components.html in Streamlit 1.56+."""
+    if hasattr(st, "iframe"):
+        st.iframe(doc, height=height)
+    elif components is not None:
+        components.html(doc, height=height, scrolling=False)
+    else:
+        st.error("This Streamlit version cannot embed HTML. Please upgrade: pip install -U streamlit")
+
+
 def show_cards(items):
     if not items:
         st.info("No films match these filters. Lower the minimum rating or clear the genre filter.")
         return
     st.caption("Hover to tilt a card. Click it to flip and read the plot.")
-    rows = math.ceil(len(items) / 4)
-    components.html(build_cards_document(items), height=rows * 400 + 60, scrolling=False)
+    # One fixed-height frame per card, laid out by Streamlit's own columns, so the
+    # page height is always known and nothing can overlap the content below.
+    for start in range(0, len(items), CARD_COLUMNS):
+        cols = st.columns(CARD_COLUMNS)
+        for col, item in zip(cols, items[start:start + CARD_COLUMNS]):
+            with col:
+                render_html(build_card_document(item, item["rank"] - 1), FRAME_HEIGHT)
 
 
 # ---- hero ------------------------------------------------------------------
@@ -483,8 +522,7 @@ with tab_similar:
         cols = st.columns(len(quick) + 1)
         for col, lab in zip(cols, quick):
             col.button(lab.rsplit(" (", 1)[0], key=f"q_{lab}",
-                       on_click=lambda l=lab: st.session_state.update(pick=l),
-                       use_container_width=True)
+                       on_click=lambda l=lab: st.session_state.update(pick=l))
     else:
         idx = labels[choice]
         row = df.iloc[idx]
@@ -516,17 +554,21 @@ with tab_describe:
         st.caption("Tip: actor and director names work too. Type them together, like christophernolan.")
 
 # ---- how it works ----------------------------------------------------------
-with st.expander("How the matching works"):
-    st.write(
-        "Each film becomes one text profile: its keywords, top three cast members, the director "
-        "(counted twice), plot summary and tagline. TF-IDF weighs the words that make a film "
-        "distinctive, and a k-nearest-neighbours model finds the profiles with the smallest cosine distance."
-    )
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Genre precision at 10", "71%", "+22 pts vs random")
-    m2.metric("Genre overlap (Jaccard)", "0.31", "+0.15 vs random")
-    m3.metric("Catalogue coverage", "83.5%")
-    st.caption(
-        "Measured on 1,000 sampled films. Genres were not used as a model input, "
-        "so they serve as an independent check."
-    )
+# Built with plain HTML instead of st.expander: the expander's icon is a font glyph
+# that prints as raw text ("arrow_right") whenever CSS interferes with the icon font.
+st.markdown(
+    '<details class="rm-how"><summary>How the matching works</summary>'
+    '<div class="rm-how-body">'
+    '<p>Each film becomes one text profile: its keywords, top three cast members, the director '
+    '(counted twice), plot summary and tagline. TF-IDF weighs the words that make a film '
+    'distinctive, and a k-nearest-neighbours model finds the profiles with the smallest cosine distance.</p>'
+    '<div class="rm-stats">'
+    '<div class="rm-stat"><span>Genre precision at 10</span><b>71%</b><em>+22 pts vs random</em></div>'
+    '<div class="rm-stat"><span>Genre overlap (Jaccard)</span><b>0.31</b><em>+0.15 vs random</em></div>'
+    '<div class="rm-stat"><span>Catalogue coverage</span><b>83.5%</b><em>of all films can be recommended</em></div>'
+    '</div>'
+    '<p class="rm-note">Measured on 1,000 sampled films. Genres were not used as a model input, '
+    'so they serve as an independent check.</p>'
+    '</div></details>',
+    unsafe_allow_html=True,
+)
