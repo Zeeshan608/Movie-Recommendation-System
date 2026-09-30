@@ -23,9 +23,21 @@ except Exception:  # pragma: no cover
     components = None
 
 BASE_DIR = Path(__file__).resolve().parent
-MOVIES_CSV = BASE_DIR / "tmdb_5000_movies.csv"
-CREDITS_CSV = BASE_DIR / "tmdb_5000_credits.csv"
-MODEL_PKL = BASE_DIR / "movie_recommendation_models.pkl"
+
+
+def _find(name):
+    """Look for a data file in the usual places; fall back to BASE_DIR."""
+    for folder in (BASE_DIR, Path.cwd(), BASE_DIR / "data",
+                   BASE_DIR.parent, Path.home() / "Downloads"):
+        p = folder / name
+        if p.exists():
+            return p
+    return BASE_DIR / name
+
+
+MOVIES_CSV = _find("tmdb_5000_movies.csv")
+CREDITS_CSV = _find("tmdb_5000_credits.csv")
+MODEL_PKL = _find("movie_recommendation_models.pkl")
 POOL = 300  # neighbours fetched before filters are applied
 
 st.set_page_config(
@@ -69,13 +81,13 @@ def _clean(x):
 
 
 @st.cache_resource(show_spinner="Loading the movie catalogue and model...")
-def load_engine():
+def load_engine(movies_path, credits_path, model_path):
     movies = pd.read_csv(
-        MOVIES_CSV,
+        movies_path,
         usecols=["id", "title", "genres", "keywords", "overview", "tagline",
                  "release_date", "runtime", "vote_average", "vote_count", "popularity"],
     )
-    credits = pd.read_csv(CREDITS_CSV, usecols=["movie_id", "cast", "crew"])
+    credits = pd.read_csv(credits_path, usecols=["movie_id", "cast", "crew"])
     df = movies.merge(credits, left_on="id", right_on="movie_id").drop(columns="movie_id")
 
     df["genres_list"] = df["genres"].apply(_get_names)
@@ -106,7 +118,7 @@ def load_engine():
     df = df[["title", "year", "runtime", "vote_average", "vote_count", "popularity",
              "genres_list", "overview", "director", "cast_show", "soup"]].reset_index(drop=True)
 
-    package = joblib.load(MODEL_PKL)
+    package = joblib.load(model_path)
     tfidf, knn = package["tfidf_vectorizer"], package["knn_model"]
     matrix = tfidf.transform(df["soup"])
     if matrix.shape[0] != knn.n_samples_fit_:
@@ -410,9 +422,22 @@ if missing:
     st.error(
         "These files must sit in the same folder as app.py: " + ", ".join(missing)
     )
+    st.caption(f"app.py is located in: {BASE_DIR}")
+    st.markdown("Or upload them here (keep the original file names):")
+    uploads = st.file_uploader(
+        "Upload missing files", type=["csv", "pkl"], accept_multiple_files=True
+    )
+    if uploads:
+        saved = False
+        for f in uploads:
+            if f.name in missing:
+                (BASE_DIR / f.name).write_bytes(f.getbuffer())
+                saved = True
+        if saved:
+            st.rerun()
     st.stop()
 
-df, tfidf, knn, matrix = load_engine()
+df, tfidf, knn, matrix = load_engine(str(MOVIES_CSV), str(CREDITS_CSV), str(MODEL_PKL))
 
 labels = {}
 for i, (t, y) in enumerate(zip(df["title"], df["year"])):
